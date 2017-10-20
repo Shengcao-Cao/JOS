@@ -222,7 +222,7 @@ mem_init(void)
 	// Permissions: kernel RW, user NONE
 	// Your code goes here:
     boot_map_region(kern_pgdir, KERNBASE, ~KERNBASE + 1,
-            0, PTE_W | PTE_U);
+            0, PTE_W);
 
 	// Check that the initial page directory has been set up correctly.
 	check_kern_pgdir();
@@ -557,7 +557,26 @@ int
 user_mem_check(struct Env *env, const void *va, size_t len, int perm)
 {
 	// LAB 3: Your code here.
-
+    void *va_start = (void*)ROUNDDOWN(va, PGSIZE);
+    void *va_end = (void*)ROUNDUP(va + len, PGSIZE);
+    void *va_i;
+    perm |= PTE_U | PTE_P;
+    for (va_i = va_start; va_i != va_end; va_i += PGSIZE)
+    {
+        if ((uintptr_t)va_i >= ULIM)
+        {
+            if (va_i == va_start) va_i = (void*)va;
+            user_mem_check_addr = (uintptr_t)va_i;
+            return -E_FAULT;
+        }
+        pte_t *ptep = pgdir_walk(env->env_pgdir, va_i, 0);
+        if (!ptep || (*ptep & perm) != perm)
+        {
+            if (va_i == va_start) va_i = (void*)va;
+            user_mem_check_addr = (uintptr_t)va_i;
+            return -E_FAULT;
+        }
+    }
 	return 0;
 }
 
