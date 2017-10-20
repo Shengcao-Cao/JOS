@@ -204,7 +204,7 @@ mem_init(void)
 	// Permissions: kernel RW, user NONE
 	// Your code goes here:
     boot_map_region(kern_pgdir, KERNBASE, ~KERNBASE + 1,
-            0, PTE_W | PTE_U);
+            0, PTE_W);
 
 	// Check that the initial page directory has been set up correctly.
 	check_kern_pgdir();
