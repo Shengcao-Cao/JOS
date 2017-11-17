@@ -820,3 +820,263 @@ Welcome to the JOS kernel monitor!
 Type 'help' for a list of commands.
 ```
 
+> Challenge! 修改JOS的内核监视器，允许继续进程的执行（例如在`int3`之后），从而能够实现单步调试的功能。你需要理解`EFLAGS`中一些位的意义。
+
+在我们之前的实现中，如果用户程序调用了`int3`指令产生一个断点异常，那么最终会在`trap_dispatch()`中调用`monitor()`，从而进入内核监视器。我们可以为监视器再添加几个命令，这样就可以像其它某些异常一样，经过处理之后返回到用户程序中继续执行。
+
+首先我们需要关注`EFLAGS`寄存器中的`TF`位，这个位是第8位，对应着`0x100`。`TF`的意思是Trap flag，当该位被置为`1`时，代表进入单步调试模式，每执行一条指令就会产生一个异常，对应着我们在`inc/trap.h`中定义的`#define T_DEBUG 1`。
+
+模仿我们曾经常用的调试器，可以在`kern/monitor.c`中，实现以下三个功能对应的函数：
+
+- `mon_continue()`：继续执行，直到遇到下一个断点或者退出。
+- `mon_stepinto()`：单步调试，在执行完下一条指令后暂停。
+- `mon_kill()`：中止执行，退出用户程序。
+
+需要注意的地方有几个。对于前两个函数，需要进行类似于`trap()`中对`curenv`的检查，然后通过`env_run(curenv)`来继续执行。我们还需要修改其中保存的`EFLAGS`寄存器的`TF`位。对于`mon_continue()`而言，不需要单步调试，清除该位即可。对于`mon_stepinto()`，我们要设置该位，使得在下一步的指令执行完成后触发异常，从而通过异常处理机制实现单步调试。而`mon_kill()`只需要调用`env_destroy(curenv)`。还有一点，`TF`造成的异常是`T_DEBUG`，而用户程序中的断点`int3`造成的异常是`T_BRKPT`。我们对两者的处理其实应该是一样的，需要在`trap_dispatch()`中把`T_DEBUG`也加进去。以下是`kern/monitor.c`中的具体实现：
+
+```c
+int
+mon_continue(int argc, char **argv, struct Trapframe *tf)
+{
+    if (curenv && curenv->env_status == ENV_RUNNING)
+    {
+        cprintf("Continue environment %x\n", curenv->env_id);
+        curenv->env_tf.tf_eflags &= ~0x100;
+        env_run(curenv);
+    }
+    else
+    {
+        cprintf("No suitable environment!\n");
+        return 0;
+    }
+    return 0;
+}
+
+int
+mon_stepinto(int argc, char **argv, struct Trapframe *tf)
+{
+    if (curenv && curenv->env_status == ENV_RUNNING)
+    {
+        cprintf("Stepinto environment %x\n", curenv->env_id);
+        curenv->env_tf.tf_eflags |= 0x100;
+        env_run(curenv);
+    }
+    else
+    {
+        cprintf("No suitable environment!\n");
+        return 0;
+    }
+    return 0;
+}
+
+int
+mon_kill(int argc, char **argv, struct Trapframe *tf)
+{
+    if (curenv)
+    {
+        cprintf("Kill environment %x\n", curenv->env_id);
+        env_destroy(curenv);
+    }
+    return 0;
+}
+```
+
+接下来，我们自己编写一个比`user/breakpoint.c`更长的测试文件`user/mybreakpoint.c`（需要加入到`kern/Makefrag`的规则中）：
+
+```c
+void
+umain(int argc, char **argv)
+{
+    cprintf("Hello\n");
+	asm volatile("int $3");
+    cprintf("world!\n");
+	asm volatile("int $3");
+	asm volatile("movl $0, %eax\n \
+	              movl $1, %ebx\n \
+	              movl $2, %ecx\n \
+	              movl $3, %edx\n");
+}
+```
+
+用户程序运行到第一个`int $3`时，产生断点异常，被处理后进入到监视器中：
+
+```
+[00000000] new env 00001000
+Incoming TRAP frame at 0xefffffbc
+Incoming TRAP frame at 0xefffffbc
+Hello
+Incoming TRAP frame at 0xefffffbc
+Welcome to the JOS kernel monitor!
+Type 'help' for a list of commands.
+TRAP frame at 0xf01bc000
+  edi  0x00000000
+  esi  0x00000000
+  ebp  0xeebfdfd0
+  oesp 0xefffffdc
+  ebx  0x00000000
+  edx  0xeebfde88
+  ecx  0x00000006
+  eax  0x00000006
+  es   0x----0023
+  ds   0x----0023
+  trap 0x00000003 Breakpoint
+  err  0x00000000
+  eip  0x00800044
+  cs   0x----001b
+  flag 0x00000092
+  esp  0xeebfdfb8
+  ss   0x----0023
+```
+
+输入`continue`命令，使之继续执行到第二个`int $3`：
+
+```
+K> continue
+Continue environment 1000
+Incoming TRAP frame at 0xefffffbc
+world!
+Incoming TRAP frame at 0xefffffbc
+Welcome to the JOS kernel monitor!
+Type 'help' for a list of commands.
+TRAP frame at 0xf01bc000
+  edi  0x00000000
+  esi  0x00000000
+  ebp  0xeebfdfd0
+  oesp 0xefffffdc
+  ebx  0x00000000
+  edx  0xeebfde88
+  ecx  0x00000007
+  eax  0x00000007
+  es   0x----0023
+  ds   0x----0023
+  trap 0x00000003 Breakpoint
+  err  0x00000000
+  eip  0x00800051
+  cs   0x----001b
+  flag 0x00000092
+  esp  0xeebfdfb8
+  ss   0x----0023
+```
+
+我们尝试一下单步调试，可以看到四个寄存器如何被逐个改变，以及Trap号是和之前的`Breakpoint`不同的`Debug`：
+
+```
+K> stepinto
+Stepinto environment 1000
+Incoming TRAP frame at 0xefffffbc
+Welcome to the JOS kernel monitor!
+Type 'help' for a list of commands.
+TRAP frame at 0xf01bc000
+  edi  0x00000000
+  esi  0x00000000
+  ebp  0xeebfdfd0
+  oesp 0xefffffdc
+  ebx  0x00000000
+  edx  0xeebfde88
+  ecx  0x00000007
+  eax  0x00000000
+  es   0x----0023
+  ds   0x----0023
+  trap 0x00000001 Debug
+  err  0x00000000
+  eip  0x00800056
+  cs   0x----001b
+  flag 0x00000192
+  esp  0xeebfdfb8
+  ss   0x----0023
+K> stepinto
+Stepinto environment 1000
+Incoming TRAP frame at 0xefffffbc
+Welcome to the JOS kernel monitor!
+Type 'help' for a list of commands.
+TRAP frame at 0xf01bc000
+  edi  0x00000000
+  esi  0x00000000
+  ebp  0xeebfdfd0
+  oesp 0xefffffdc
+  ebx  0x00000001
+  edx  0xeebfde88
+  ecx  0x00000007
+  eax  0x00000000
+  es   0x----0023
+  ds   0x----0023
+  trap 0x00000001 Debug
+  err  0x00000000
+  eip  0x0080005b
+  cs   0x----001b
+  flag 0x00000192
+  esp  0xeebfdfb8
+  ss   0x----0023
+K> stepinto
+Stepinto environment 1000
+Incoming TRAP frame at 0xefffffbc
+Welcome to the JOS kernel monitor!
+Type 'help' for a list of commands.
+TRAP frame at 0xf01bc000
+  edi  0x00000000
+  esi  0x00000000
+  ebp  0xeebfdfd0
+  oesp 0xefffffdc
+  ebx  0x00000001
+  edx  0xeebfde88
+  ecx  0x00000002
+  eax  0x00000000
+  es   0x----0023
+  ds   0x----0023
+  trap 0x00000001 Debug
+  err  0x00000000
+  eip  0x00800060
+  cs   0x----001b
+  flag 0x00000192
+  esp  0xeebfdfb8
+  ss   0x----0023
+K> stepinto
+Stepinto environment 1000
+Incoming TRAP frame at 0xefffffbc
+Welcome to the JOS kernel monitor!
+Type 'help' for a list of commands.
+TRAP frame at 0xf01bc000
+  edi  0x00000000
+  esi  0x00000000
+  ebp  0xeebfdfd0
+  oesp 0xefffffdc
+  ebx  0x00000001
+  edx  0x00000003
+  ecx  0x00000002
+  eax  0x00000000
+  es   0x----0023
+  ds   0x----0023
+  trap 0x00000001 Debug
+  err  0x00000000
+  eip  0x00800065
+  cs   0x----001b
+  flag 0x00000192
+  esp  0xeebfdfb8
+  ss   0x----0023
+```
+
+输入`continue`，用户程序运行到结束为止：
+
+```
+K> continue
+Continue environment 1000
+Incoming TRAP frame at 0xefffffbc
+[00001000] exiting gracefully
+[00001000] free env 00001000
+Destroyed the only environment - nothing more to do!
+Welcome to the JOS kernel monitor!
+Type 'help' for a list of commands.
+```
+
+或者也可以输入`kill`，直接中止该程序：
+
+```
+K> kill
+Kill environment 1000
+[00001000] free env 00001000
+Destroyed the only environment - nothing more to do!
+Welcome to the JOS kernel monitor!
+Type 'help' for a list of commands.
+```
+
+如果结合上一个Lab中实现的Challenge，我们还可以查看内存中的内容等等，已经可以说是实现了一个调试器的基本功能了。

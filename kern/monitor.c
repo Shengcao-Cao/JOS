@@ -34,6 +34,7 @@ static struct Command commands[] = {
     { "pageinfo", "Display page info", mon_pageinfo },
     { "continue", "Continue the environment", mon_continue },
     { "stepinto", "Step into the environment", mon_stepinto },
+    { "kill", "Kill the environment", mon_kill },
 };
 
 /***** Implementations of basic kernel monitor commands *****/
@@ -245,6 +246,17 @@ mon_stepinto(int argc, char **argv, struct Trapframe *tf)
     {
         cprintf("No suitable environment!\n");
         return 0;
+    }
+    return 0;
+}
+
+int
+mon_kill(int argc, char **argv, struct Trapframe *tf)
+{
+    if (curenv)
+    {
+        cprintf("Kill environment %x\n", curenv->env_id);
+        env_destroy(curenv);
     }
     return 0;
 }
