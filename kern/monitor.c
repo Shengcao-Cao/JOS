@@ -12,6 +12,7 @@
 #include <kern/kdebug.h>
 #include <kern/pmap.h>
 #include <kern/trap.h>
+#include <kern/env.h>
 
 #define CMDBUF_SIZE	80	// enough for one VGA text line
 
@@ -31,6 +32,8 @@ static struct Command commands[] = {
     { "setpermission", "Set permission bits", mon_setpermission },
     { "dumpmemory", "Dump memory contents", mon_dumpmemory },
     { "pageinfo", "Display page info", mon_pageinfo },
+    { "continue", "Continue the environment", mon_continue },
+    { "stepinto", "Step into the environment", mon_stepinto },
 };
 
 /***** Implementations of basic kernel monitor commands *****/
@@ -208,6 +211,40 @@ mon_pageinfo(int argc, char **argv, struct Trapframe *tf)
     for (idx_i = idx_start; idx_i < idx_end; ++idx_i)
     {
         cprintf("%d\t\t0x%08x\t\t%d\n", idx_i, idx_i << PGSHIFT, pages[idx_i].pp_ref);
+    }
+    return 0;
+}
+
+int
+mon_continue(int argc, char **argv, struct Trapframe *tf)
+{
+    if (curenv && curenv->env_status == ENV_RUNNING)
+    {
+        cprintf("Continue environment %x\n", curenv->env_id);
+        curenv->env_tf.tf_eflags &= ~0x100;
+        env_run(curenv);
+    }
+    else
+    {
+        cprintf("No suitable environment!\n");
+        return 0;
+    }
+    return 0;
+}
+
+int
+mon_stepinto(int argc, char **argv, struct Trapframe *tf)
+{
+    if (curenv && curenv->env_status == ENV_RUNNING)
+    {
+        cprintf("Stepinto environment %x\n", curenv->env_id);
+        curenv->env_tf.tf_eflags |= 0x100;
+        env_run(curenv);
+    }
+    else
+    {
+        cprintf("No suitable environment!\n");
+        return 0;
     }
     return 0;
 }
