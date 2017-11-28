@@ -296,7 +296,9 @@ sys_ipc_try_send(envid_t envid, uint32_t value, void *srcva, unsigned perm)
     r = envid2env(envid, &e, 0);
     if (r < 0) return r;
     if (!(e->env_ipc_recving) || e->env_ipc_from)
+    {
         return -E_IPC_NOT_RECV;
+    }
     if (e->env_ipc_dstva < (void*)UTOP && srcva < (void*)UTOP)
     {
         if (srcva != ROUNDDOWN(srcva, PGSIZE)) return -E_INVAL;

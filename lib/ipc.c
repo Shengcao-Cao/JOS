@@ -23,8 +23,6 @@ int32_t
 ipc_recv(envid_t *from_env_store, void *pg, int *perm_store)
 {
 	// LAB 4: Your code here.
-    //cprintf("%d on %d begins recv\n", thisenv->env_id, thisenv->env_cpunum);
-    //cprintf("%d %x %d %d %x\n", thisenv->env_ipc_recving, thisenv->env_ipc_dstva, thisenv->env_ipc_value, thisenv->env_ipc_from, thisenv->env_ipc_perm);
     int r;
     if (pg)
         r = sys_ipc_recv(pg);
@@ -34,8 +32,6 @@ ipc_recv(envid_t *from_env_store, void *pg, int *perm_store)
         *from_env_store = r < 0 ? 0 : thisenv->env_ipc_from;
     if (perm_store)
         *perm_store = r < 0 ? 0 : thisenv->env_ipc_perm;
-    //cprintf("%d on %d ends recv\n", thisenv->env_id, thisenv->env_cpunum);
-    //cprintf("%d %x %d %d %x\n", thisenv->env_ipc_recving, thisenv->env_ipc_dstva, thisenv->env_ipc_value, thisenv->env_ipc_from, thisenv->env_ipc_perm);
     if (r < 0) return r;
 	return thisenv->env_ipc_value;
 }
@@ -52,8 +48,6 @@ void
 ipc_send(envid_t to_env, uint32_t val, void *pg, int perm)
 {
 	// LAB 4: Your code here.
-    //cprintf("%d on %d begins send\n", thisenv->env_id, thisenv->env_cpunum);
-    //cprintf("%d %d %x %d\n", to_env, val, pg, perm);
     if (!pg) pg = (void*)UTOP;
     while (1)
     {
@@ -64,8 +58,6 @@ ipc_send(envid_t to_env, uint32_t val, void *pg, int perm)
         sys_yield();
         if (r == 0) break;
     }
-    //cprintf("%d on %d ends send\n", thisenv->env_id, thisenv->env_cpunum);
-    //cprintf("%d %d %x %d\n", to_env, val, pg, perm);
 }
 
 // Find the first environment of the given type.  We'll use this to
