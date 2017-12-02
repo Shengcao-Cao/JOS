@@ -10,6 +10,7 @@
 #include <kern/console.h>
 #include <kern/monitor.h>
 #include <kern/kdebug.h>
+#include <kern/pmap.h>
 #include <kern/trap.h>
 
 #define CMDBUF_SIZE	80	// enough for one VGA text line
@@ -25,6 +26,11 @@ struct Command {
 static struct Command commands[] = {
 	{ "help", "Display this list of commands", mon_help },
 	{ "kerninfo", "Display information about the kernel", mon_kerninfo },
+    { "backtrace", "Display backtrace", mon_backtrace },
+    { "showmappings", "Display page mappings", mon_showmappings },
+    { "setpermission", "Set permission bits", mon_setpermission },
+    { "dumpmemory", "Dump memory contents", mon_dumpmemory },
+    { "pageinfo", "Display page info", mon_pageinfo },
 };
 
 /***** Implementations of basic kernel monitor commands *****/
@@ -58,11 +64,153 @@ mon_kerninfo(int argc, char **argv, struct Trapframe *tf)
 int
 mon_backtrace(int argc, char **argv, struct Trapframe *tf)
 {
-	// Your code here.
+    cprintf("Stack backtrace:\n");
+    struct Eipdebuginfo info;
+    uint32_t* ebp = (uint32_t*)read_ebp();
+    while (ebp)
+    {
+        cprintf("  ebp %08x  eip %08x  args", ebp, ebp[1]);
+        for (int i = 2; i < 7; ++i) cprintf(" %08x", ebp[i]);
+        debuginfo_eip(ebp[1], &info);
+        cprintf("\n         %s:%d: %.*s+%d\n", info.eip_file,
+                info.eip_line, info.eip_fn_namelen, info.eip_fn_name,
+                ebp[1] - info.eip_fn_addr);
+        ebp = (uint32_t*)*ebp;
+    }
 	return 0;
 }
 
+int
+mon_showmappings(int argc, char **argv, struct Trapframe *tf)
+{
+    cprintf("Show mappings:\n");
+    uint32_t va_start, va_end, va_i;
+    if (argc == 2)
+    {
+        va_start = va_end = ROUNDDOWN(strtol(argv[1], NULL, 0), PGSIZE);
+    }
+    else if (argc == 3)
+    {
+        va_start = ROUNDDOWN(strtol(argv[1], NULL, 0), PGSIZE);
+        va_end = ROUNDDOWN(strtol(argv[2], NULL, 0), PGSIZE);
+    }
+    else
+    {
+        cprintf("Usage: showmappings start_addr [end_addr]\n");
+        return 0;
+    }
+    cprintf("VA\t\tPA\t\tPERM (User Writeable Present)\n");
+    for (va_i = va_start; va_i <= va_end; va_i += PGSIZE)
+    {
+        pte_t *ptep = pgdir_walk(kern_pgdir, (void*)va_i, 0);
+        if (ptep)
+        {
+            cprintf("0x%08x\t0x%08x\t", va_i, PTE_ADDR(*ptep));
+            if (*ptep & PTE_U) cprintf("U"); else cprintf("/");
+            if (*ptep & PTE_W) cprintf("W"); else cprintf("/");
+            if (*ptep & PTE_P) cprintf("P"); else cprintf("/");
+            cprintf("\n");
+        }
+        else
+            cprintf("0x%08x\tNo mapping\n");
+    }
+    return 0;
+}
 
+int
+mon_setpermission(int argc, char **argv, struct Trapframe *tf)
+{
+    cprintf("Set permission:\n");
+    uint32_t va_start, va_end, va_i;
+    if (argc == 3)
+    {
+        va_start = va_end = ROUNDDOWN(strtol(argv[2], NULL, 0), PGSIZE);
+    }
+    else if (argc == 4)
+    {
+        va_start = ROUNDDOWN(strtol(argv[2], NULL, 0), PGSIZE);
+        va_end = ROUNDDOWN(strtol(argv[3], NULL, 0), PGSIZE);
+    }
+    else
+    {
+        cprintf("Usage: setpermission perm start_addr [end_addr]\n");
+        return 0;
+    }
+    uint32_t perm = strtol(argv[1], NULL, 0);
+    if (perm >= 8)
+    {
+        cprintf("Permission bits must be in the range [0, 8)!\n");
+        return 0;
+    }
+    cprintf("Setting permission to: ");
+    if (perm & PTE_U) cprintf("User "); else cprintf("Not-user ");
+    if (perm & PTE_W) cprintf("Writeable "); else cprintf("Not-writeable ");
+    if (perm & PTE_P) cprintf("Present "); else cprintf("Not-present ");
+    cprintf("\n");
+    for (va_i = va_start; va_i <= va_end; va_i += PGSIZE)
+    {
+        pte_t *ptep = pgdir_walk(kern_pgdir, (void*)va_i, 0);
+        if (ptep)
+            *ptep = (*ptep & ~7) | perm;
+    }
+    return 0;
+}
+
+int
+mon_dumpmemory(int argc, char **argv, struct Trapframe *tf)
+{
+    cprintf("Dump memory:\n");
+    uint32_t va_start, va_end, va_i, num, type, count = 0;
+    if (argc == 4)
+    {
+        type = argv[1][0] == 'p' || argv[1][0] == 'P';
+        va_start = ROUNDDOWN(strtol(argv[2], NULL, 0), 4);
+        if (type)
+            va_start = (uint32_t)KADDR(va_start);
+        num = strtol(argv[3], NULL, 0);
+        va_end = va_start + num * 4;
+    }
+    else
+    {
+        cprintf("Usage: dumpmemory addr_type start_addr num\n");
+        return 0;
+    }
+    cprintf("Dumping memory starting from ");
+    if (type) cprintf("physical address "); else cprintf("virtual address ");
+    cprintf("0x%08x %d words:\n", va_start, num);
+    for (va_i = va_start; va_i < va_end; va_i += 4, ++count)
+    {
+        cprintf("%08x ", *(uint32_t*)va_i);
+        if (count == 7) cprintf("\n");
+        if (count == 8) count = 0;
+    }
+    cprintf("\n");
+    return 0;
+}
+
+int
+mon_pageinfo(int argc, char **argv, struct Trapframe *tf)
+{
+    cprintf("Page info:\n");
+    uint32_t idx_start, idx_end, idx_i, num;
+    if (argc == 3)
+    {
+        idx_start = strtol(argv[1], NULL, 0);
+        num = strtol(argv[2], NULL, 0);
+        idx_end = idx_start + num;
+    }
+    else
+    {
+        cprintf("Usage: pageinfo page_idx num\n");
+        return 0;
+    }
+    cprintf("Page index\tPhysical address\tReference count\n");
+    for (idx_i = idx_start; idx_i < idx_end; ++idx_i)
+    {
+        cprintf("%d\t\t0x%08x\t\t%d\n", idx_i, idx_i << PGSHIFT, pages[idx_i].pp_ref);
+    }
+    return 0;
+}
 
 /***** Kernel monitor command interpreter *****/
 
