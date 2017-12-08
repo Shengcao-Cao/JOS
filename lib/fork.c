@@ -64,15 +64,21 @@ duppage(envid_t envid, unsigned pn)
 	// LAB 4: Your code here.
     void *va = (void*)(pn * PGSIZE);
     int perm = uvpt[pn] & PTE_SYSCALL;
+    if (perm & PTE_SHARE)
+    {
+        r = sys_page_map(0, va, envid, va, perm);
+        if (r < 0) panic("duppage: %e!\n", r);
+        return 0;
+    }
     if (perm & (PTE_W | PTE_COW))
     {
         perm &= ~PTE_W;
         perm |= PTE_COW;
     }
     r = sys_page_map(0, va, envid, va, perm);
-    if (r < 0) panic("duppage: %e!\n");
+    if (r < 0) panic("duppage: %e!\n", r);
     r = sys_page_map(0, va, 0, va, perm);
-    if (r < 0) panic("duppage: %e!\n");
+    if (r < 0) panic("duppage: %e!\n", r);
 	return 0;
 }
 
