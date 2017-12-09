@@ -265,6 +265,8 @@ env_alloc(struct Env **newenv_store, envid_t parent_id)
 
 	// Clear the page fault handler until user installs one.
 	e->env_pgfault_upcall = 0;
+    memset(e->env_handler, 0, sizeof(e->env_handler));
+    e->env_handler_entry = NULL;
 
 	// Also clear the IPC receiving flag.
 	e->env_ipc_recving = 0;

@@ -111,3 +111,15 @@ sys_ipc_recv(void *dstva)
 	return syscall(SYS_ipc_recv, 1, (uint32_t)dstva, 0, 0, 0, 0);
 }
 
+int
+sys_env_set_handler(envid_t envid, uint32_t trapno, void *func)
+{
+    return syscall(SYS_env_set_handler, 1, envid, trapno, (uint32_t)func, 0, 0);
+}
+
+int
+sys_env_set_handler_entry(envid_t envid, void *func)
+{
+    return syscall(SYS_env_set_handler_entry, 1, envid, (uint32_t)func, 0, 0, 0);
+}
+

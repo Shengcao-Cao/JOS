@@ -1695,3 +1695,158 @@ TRAP frame at 0xf02b407c from CPU 2
         env_run(cur);
 ```
 
+> Challenge! 扩展内核，使得所有用户空间可能产生的异常都可以被重定向到用户模式下的异常处理函数。写一些测试程序处理各类异常。
+
+模仿我们前面实现的用户模式下的缺页异常处理，以及Linux中的`signal()`接口，可以实现用户自定义的异常处理。下面概述一下我们将要实现的一个通用的接口，基本上与先前实现的缺页异常处理相似，但是由于通用性的要求有一些差异：
+
+- 在用户环境`struct Env`中添加一个数组`void *env_handler[]`储存用户自定义的C代码异常处理函数入口，再添加一个汇编代码入口`void *env_handler_entry`用于恢复上下文，分别类似于`_pgfault_handler` `_pgfault_upcall`。
+- 用户模式下调用库函数`set_handler()`来设置自定义的异常处理函数入口。
+- 当发生异常时，异常通过正常的和以前同样的机制进入`trap_dispatch()`，首先判断当前环境中是否已有设置好的处理函数入口。如果没有则按默认方式处理。
+- 在用户异常栈中构造出`struct UTrapframe`的结构。我们借用已经定义好的该结构，只是不一定总是使用其中的部分内容，比如`utf_faultu_va`。在该结构之下再压入用户自定义的处理函数入口`env_handler[tf->tf_trapno]`，然后将用户环境的入口设为`env_handler_entry`，实际为`lib/hdentry.S`中的汇编代码。
+- 这个`lib/hdentry.S`和`lib/pfentry.S`类似，负责调用用户自定义的C代码处理函数，然后根据`struct UTrapframe`中的内容正确返回。不同的是它需要`entry`作为参数来找到入口，而不是依赖于一个全局变量。
+- 在用户异常栈中执行处理函数，由用户程序自定义。最终正常返回。
+
+具体的实现如下。首先，我们在`inc/env.h`中的`struct Env`中添加：
+
+```c
+    void *env_handler[64];
+    void *env_handler_entry;
+```
+
+并且在`kern/env.c`中的`env_alloc()`中进行初始化为空：
+
+```c
+    memset(e->env_handler, 0, sizeof(e->env_handler));
+    e->env_handler_entry = NULL;
+```
+
+添加系统调用，允许用户定义异常处理函数。模仿`sys_env_set_pgfault_upcall()`，我们在`kern/syscall.c`中添加如下代码以实现对`env_handler`和`env_handler_entry`的修改：
+
+```c
+static int
+sys_env_set_handler(envid_t envid, uint32_t trapno, void *func)
+{
+    struct Env *e = NULL;
+    int r = envid2env(envid, &e, 1);
+    if (r < 0) return r;
+    if (trapno < 0 || trapno >= 64) return -E_INVAL;
+    e->env_handler[trapno] = func;
+    return 0;
+}
+
+static int
+sys_env_set_handler_entry(envid_t envid, void *func)
+{
+    struct Env *e = NULL;
+    int r = envid2env(envid, &e, 1);
+    if (r < 0) return r;
+    e->env_handler_entry = func;
+    return 0;
+}
+```
+
+然后在`inc/syscall.h` `kern/syscall.c` `lib/syscall.c` `inc/lib.h`中添加一些配套的代码，就可以完成这个系统调用了，不再赘述。然后是在用户库中添加`lib/handler.c`，包装该系统调用：
+
+```c
+#include <inc/lib.h>
+extern void hdentry(void);
+void set_handler(uint32_t trapno, void (*handler)(struct UTrapframe *utf))
+{
+	int r;
+	if (thisenv->env_handler_entry == NULL)
+	{
+        int r;
+        r = sys_page_alloc(0, (void*)(UXSTACKTOP - PGSIZE),
+                PTE_U | PTE_W | PTE_P);
+        if (r < 0)
+            panic("set_handler: %e!\n", r);
+        r = sys_env_set_handler_entry(0, hdentry);
+        if (r < 0)
+            panic("set_handler: %e!\n", r);
+	}
+	sys_env_set_handler(0, trapno, handler);
+}
+```
+
+对某个环境初次调用时，会对用户异常栈和`env_handler_entry`进行初始化。这里的`hdentry()`是汇编代码中定义的入口，将在下面叙述。在处理异常时，具体的实现如下。首先是在`kern/trap.c`中的`trap_dispatch()`开头添加特殊的处理，判断是否已定义处理函数并在异常栈中构造`struct UTrapframe`：
+
+```c
+    if (curenv && curenv->env_handler[tf->tf_trapno])
+    {
+        struct UTrapframe *utf;
+        if (UXSTACKTOP - PGSIZE <= tf->tf_esp && tf->tf_esp < UXSTACKTOP)
+            utf = (struct UTrapframe*)(tf->tf_esp - sizeof(struct UTrapframe) - 4);
+        else
+            utf = (struct UTrapframe*)(UXSTACKTOP - sizeof(struct UTrapframe));
+        user_mem_assert(curenv, (void*)utf - 4, sizeof(struct UTrapframe) + 4, PTE_W);
+        utf->utf_err = tf->tf_err;
+        utf->utf_regs = tf->tf_regs;
+        utf->utf_eip = tf->tf_eip;
+        utf->utf_eflags = tf->tf_eflags;
+        utf->utf_esp = tf->tf_esp;
+        void *entry = (void*)utf - 4;
+        *(void**)entry = curenv->env_handler[tf->tf_trapno];
+        curenv->env_tf.tf_eip = (uintptr_t)curenv->env_handler_entry;
+        curenv->env_tf.tf_esp = (uintptr_t)entry;
+        env_run(curenv);
+        return;
+    }
+```
+
+`lib/hdentry.S`的实现如下，与`lib/pfentry.S`不同的只是如何得到所需C代码的入口：
+
+```assembly
+#include <inc/mmu.h>
+#include <inc/memlayout.h>
+
+.text
+.globl hdentry
+hdentry:
+	popl %eax
+	pushl %esp
+	call *%eax
+	addl $4, %esp
+	
+	movl 0x30(%esp), %eax
+	subl $4, %eax
+	movl %eax, 0x30(%esp)
+	movl 0x28(%esp), %ebx
+	movl %ebx, (%eax)
+	addl $8, %esp
+	popal
+	addl $4, %esp
+	popfl
+	popl %esp
+	ret
+```
+
+接下来写一个测试程序`user/dividehdlr.c`，处理除零异常：
+
+```c
+#include <inc/lib.h>
+void handler(struct UTrapframe *utf)
+{
+    cprintf("Divided by zero!\n");
+    exit();
+}
+void umain(int argc, char **argv)
+{
+    set_handler(T_DIVIDE, handler);
+    int zero = 0;
+    cprintf("%d\n", 1 / zero);
+}
+```
+
+当然，实际编译时还需要修改一些`Makefrag`，将我们自定义的这些文件添加进去。测试的结果如下：
+
+```
+[00000000] new env 00001000
+Divided by zero!
+[00001000] exiting gracefully
+[00001000] free env 00001000
+No runnable environments in the system!
+Welcome to the JOS kernel monitor!
+Type 'help' for a list of commands.
+```
+
+可见，我们自定义的异常处理函数成功接管了异常，并且得到了我们想要看到的结果。还可以测试其它的异常，这里不再赘述了。目前不足的一点是处理完异常后只能直接退出用户程序或者返回到触发异常的那一条语句，而不能跳过这条语句。如果要实现这个功能的话，则需要根据机器码的长度修改trap frame中的`tf_eip`。

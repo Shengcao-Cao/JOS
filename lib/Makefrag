@@ -14,7 +14,9 @@ LIB_SRCFILES :=		$(LIB_SRCFILES) \
 			lib/pgfault.c \
 			lib/pfentry.S \
 			lib/fork.c \
-			lib/ipc.c
+			lib/ipc.c \
+			lib/handler.c \
+			lib/hdentry.S
 
 
 
