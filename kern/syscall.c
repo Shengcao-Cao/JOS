@@ -333,6 +333,7 @@ sys_ipc_try_send(envid_t envid, uint32_t value, void *srcva, unsigned perm)
     else
         e->env_ipc_perm = 0;
     e->env_ipc_recving = 0;
+    e->env_ipc_recved = 1;
     e->env_ipc_from = curenv->env_id;
     e->env_ipc_value = value;
     e->env_tf.tf_regs.reg_eax = 0;
@@ -358,6 +359,7 @@ sys_ipc_recv(void *dstva)
     if (dstva < (void*)UTOP && dstva != ROUNDDOWN(dstva, PGSIZE))
         return -E_INVAL;
     curenv->env_ipc_recving = 1;
+    curenv->env_ipc_recved = 0;
     curenv->env_ipc_from = 0;
     curenv->env_ipc_dstva = dstva;
     curenv->env_status = ENV_NOT_RUNNABLE;

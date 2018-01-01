@@ -24,6 +24,17 @@ va_is_dirty(void *va)
 	return (uvpt[PGNUM(va)] & PTE_D) != 0;
 }
 
+static void
+print_bcmap_info()
+{
+    cprintf("\n");
+    cprintf("nbc: %d, ibc: %d\n", nbc, ibc);
+    int i;
+    for (i = 0; i < nbc; ++i)
+        cprintf("%p ", bcmap[i]);
+    cprintf("\n");
+}
+
 // Fault any disk block that is read in to memory by
 // loading it from disk.
 static void
@@ -49,6 +60,35 @@ bc_pgfault(struct UTrapframe *utf)
 	//
 	// LAB 5: you code here:
     addr = ROUNDDOWN(addr, PGSIZE);
+    
+    if (nbc < NBC)
+        bcmap[nbc++] = (uint32_t)addr;
+    else
+    {
+        void *eaddr = NULL;
+        int r;
+        while (1)
+        {
+            eaddr = (void*)(bcmap[ibc]);
+            if (uvpt[PGNUM(eaddr)] & PTE_A)
+            {
+                if ((r = sys_page_map(0, eaddr, 0, eaddr, uvpt[PGNUM(eaddr)]
+                                & PTE_SYSCALL)) < 0)
+                    panic("bc_pgfault: %e!\n", r);
+                if (++ibc == NBC) ibc = 0;
+            }
+            else
+            {
+                if (uvpt[PGNUM(eaddr)] & PTE_D)
+                    flush_block(eaddr);
+                sys_page_unmap(0, eaddr);
+                bcmap[ibc] = (uint32_t)addr;
+                break;
+            }
+        }
+    }
+    // print_bcmap_info();
+    
     if ((r = sys_page_alloc(0, addr, PTE_U | PTE_W | PTE_P)) < 0)
         panic("bc_pgfault: %e!\n", r);
     ide_read(blockno * BLKSECTS, addr, BLKSECTS);

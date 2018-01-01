@@ -30,6 +30,7 @@ sched_yield(void)
 
 	// LAB 4: Your code here.
     struct Env *cur = thiscpu->cpu_env;
+    struct Env *nxt = NULL;
     int start = 1, end = 0, i;
     if (cur)
     {
@@ -45,7 +46,15 @@ sched_yield(void)
     }
     for (i = start; i != end; i = (i + 1) % NENV)
         if (envs[i].env_status == ENV_RUNNABLE)
-            env_run(&envs[i]);
+        {
+            nxt = &envs[i];
+            if (nxt->env_ipc_recved)
+            {
+                nxt->env_ipc_recved = false;
+                break;
+            }
+        }
+    if (nxt) env_run(nxt);
     if (cur && cur->env_status == ENV_RUNNABLE)
         env_run(cur);
 

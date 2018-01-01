@@ -925,3 +925,158 @@ copy_shared_pages(envid_t child)
 
 这显然没有道理，注释掉之后即可通过该测试。此外还有运行shell的测试总是会超时，不影响分数但是原因不明，猜测可能是输出较长匹配太慢。
 
+> Challenge! 目前的块缓存没有替换策略。一旦磁盘中的某个块进入了内存，就不会被移出。为我们的块缓存添加换出机制。使用由硬件自动设置的页表中的`PTE_A`访问位，无需修改每一处访问磁盘映射区域的代码就可以大概确定磁盘块的使用情况。要小心被写过的块。
+
+在不修改整个内存管理大框架的前提下，我们可以为文件系统环境设置一个可使用内存上限，代表它在任意时刻所能实际占用的内存大小。尽管文件系统环境实际上可以访问至多3G大的整个磁盘，但它并不需要占用这么大的内存。比如我们可以设置同时在内存中的磁盘块数量不超过某个值，达到上限后若要再将块加入缓存，则要先将之前存在的一些块换出。
+
+我们使用时钟替换策略：循环遍历所有已在内存中的块，检查`PTE_A`位判断最近是否有过访问。如果有过访问，将`PTE_A`位清除；如果没有访问，则将该块换出。换出时，先检查`PTE_D`位判断该块是否被写过，如果是的话调用`flush_block()`写回磁盘，然后调用`sys_page_unmap()`解除该页映射。
+
+具体的实现如下。首先，我们在`fs/fs.h`中补充以下声明：
+
+```c
+#define NBC         1024
+uint32_t bcmap[NBC];
+int nbc, ibc;
+```
+
+我们允许通过`bc_pgfault()`进入块缓存的磁盘块最大同时只能有`NBC`个，在这里设置为1K，其总大小为4M，块缓存中的块所对应的虚拟地址存在数组`bcmap`中，数组元素数量当前为`nbc`，上限为`NBC`，这里恰好占用一页。`cbc`将在后面的寻找换出块中被用到。
+
+在`fs/bc.c`中的`bc_pgfault()`中，正式分配内存页之前我们先检查当前的`nbc`，如果还未达到上限则将其加一，否则寻找一个最近没有被访问过的块换出，具体情况已在前面叙述过：
+
+```c
+    if (nbc < NBC)
+        bcmap[nbc++] = (uint32_t)addr;
+    else
+    {
+        void *eaddr = NULL;
+        int r;
+        while (1)
+        {
+            eaddr = (void*)(bcmap[ibc]);
+            if (uvpt[PGNUM(eaddr)] & PTE_A)
+            {
+                if ((r = sys_page_map(0, eaddr, 0, eaddr, uvpt[PGNUM(eaddr)]
+                                & PTE_SYSCALL)) < 0)
+                    panic("bc_pgfault: %e!\n", r);
+                if (++ibc == NBC) ibc = 0;
+            }
+            else
+            {
+                if (uvpt[PGNUM(eaddr)] & PTE_D)
+                    flush_block(eaddr);
+                sys_page_unmap(0, eaddr);
+                bcmap[ibc] = (uint32_t)addr;
+                break;
+            }
+        }
+    }
+```
+
+为了保证`bcmap`正常工作，要注释掉`bc_init()`中的`check_bc()`，里面出现了对超级块取消映射的操作。测试时，我们把`NBC`设置为一个较小的值（比如8）以便观察到频繁的替换。在`bc_pgfault()`中的上述过程之后，我们输出一下当前块缓存的调试信息：
+
+```c
+static void
+print_bcmap_info()
+{
+    cprintf("\n");
+    cprintf("nbc: %d, ibc: %d\n", nbc, ibc);
+    int i;
+    for (i = 0; i < nbc; ++i)
+        cprintf("%p ", bcmap[i]);
+    cprintf("\n");
+}
+```
+
+然后用用户程序`icode`来测试，结果如下：
+
+```
+...
+
+FS is running
+FS can do I/O
+Device 1 presence: 1
+
+nbc: 1, ibc: 0
+0x10001000 
+superblock is good
+
+nbc: 2, ibc: 0
+0x10001000 0x10002000 
+bitmap is good
+alloc_block is good
+
+nbc: 3, ibc: 0
+icode startup
+icode: open /motd
+0x10001000 0x10002000 0x1006a000 
+
+nbc: 4, ibc: 0
+0x10001000 0x10002000 0x1006a000 0x1006b000 
+file_open is good
+
+nbc: 5, ibc: 0
+0x10001000 0x10002000 0x1006a000 0x1006b000 0x10003000 
+file_get_block is good
+file_flush is good
+file_truncate is good
+file rewrite is good
+icode: read /motd
+
+nbc: 6, ibc: 0
+0x10001000 0x10002000 0x1006a000 0x1006b000 0x10003000 0x10004000 
+This is /motd, the message of the day.
+
+Welcome to the JOS kernel, now with a file system!
+
+icode: close /motd
+icode: spawn /init
+
+nbc: 7, ibc: 0
+0x10001000 0x10002000 0x1006a000 0x1006b000 0x10003000 0x10004000 0x10009000 
+
+nbc: 8, ibc: 0
+0x10001000 0x10002000 0x1006a000 0x1006b000 0x10003000 0x10004000 0x10009000 0x1000a000 
+
+nbc: 8, ibc: 4
+0x10001000 0x10002000 0x1006a000 0x1006b000 0x1000b000 0x10004000 0x10009000 0x1000a000 
+
+nbc: 8, ibc: 3
+0x10001000 0x10002000 0x1006a000 0x1000c000 0x1000b000 0x10004000 0x10009000 0x1000a000 
+
+nbc: 8, ibc: 4
+0x10001000 0x10002000 0x1006a000 0x1000c000 0x1000d000 0x10004000 0x10009000 0x1000a000 
+
+nbc: 8, ibc: 5
+0x10001000 0x10002000 0x1006a000 0x1000c000 0x1000d000 0x1000e000 0x10009000 0x1000a000 
+icode: exiting
+init: running
+init: data seems okay
+init: bss seems okay
+init: args: 'init' 'initarg1' 'initarg2'
+init: running sh
+init: starting sh
+
+nbc: 8, ibc: 6
+0x10001000 0x10002000 0x1006a000 0x1000c000 0x1000d000 0x1000e000 0x1006b000 0x1000a000 
+
+nbc: 8, ibc: 7
+0x10001000 0x10002000 0x1006a000 0x1000c000 0x1000d000 0x1000e000 0x1006b000 0x1003f000 
+
+nbc: 8, ibc: 3
+0x10001000 0x10002000 0x1006a000 0x10040000 0x1000d000 0x1000e000 0x1006b000 0x1003f000 
+
+nbc: 8, ibc: 4
+0x10001000 0x10002000 0x1006a000 0x10040000 0x10041000 0x1000e000 0x1006b000 0x1003f000 
+
+nbc: 8, ibc: 5
+0x10001000 0x10002000 0x1006a000 0x10040000 0x10041000 0x10042000 0x1006b000 0x1003f000 
+
+nbc: 8, ibc: 7
+0x10001000 0x10002000 0x1006a000 0x10040000 0x10041000 0x10042000 0x1006b000 0x10043000 
+
+nbc: 8, ibc: 2
+0x10001000 0x10002000 0x10044000 0x10040000 0x10041000 0x10042000 0x1006b000 0x10043000 
+$ 
+```
+
+可见，`0x10001000` `0x10002000`所代表的`super` `bitmap`重要的磁盘块是没有被换出的，而其它的磁盘块如果没有被用到就换出了，的确是有效的替换策略。
