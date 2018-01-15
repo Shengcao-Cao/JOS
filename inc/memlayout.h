@@ -11,13 +11,6 @@
  * which are relevant to both the kernel and user-mode software.
  */
 
-// Global descriptor numbers
-#define GD_KT     0x08     // kernel text
-#define GD_KD     0x10     // kernel data
-#define GD_UT     0x18     // user text
-#define GD_UD     0x20     // user data
-#define GD_TSS0   0x28     // Task segment selector for CPU 0
-
 /*
  * Virtual memory map:                                Permissions
  *                                                    kernel/user
