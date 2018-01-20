@@ -4,7 +4,7 @@
 
 ## 前言
 
-我们将把JOS的部分实现移植到ARM平台上。目前已完成的进度：Lab1的代码和文档。
+我们将把JOS的部分实现移植到ARM平台上。目前已完成的进度：Lab2的代码和文档。所有内容均上传至GitHub：https://github.com/Friedrich1006/JOS/tree/arm。
 
 首先，我们需要准备好所需要的工具。
 
@@ -195,4 +195,3 @@ Lab2中主要就是修改`kern/pmap.c`，此外也删除了一些内容，如`ke
 - `mem_init()`：修改了调用各子函数时的参数，特别是`boot_map_region()`的参数，以及用ARM的`TTBR0`取代x86的`cr3`
 - `pgdir_walk()` `boot_map_region()` `page_insert` `page_lookup`：修改了各个宏
 - `check_***()`：根据我们的修改后的内容检查。这部分修改非常的繁琐，而且其中对于页面的强行操作也可能导致一些bug，在`make grade`通过之后最好将这些检查都注释掉
-
