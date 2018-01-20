@@ -133,15 +133,18 @@ ARM中的函数调用栈布局与x86也有所不同。如前所述，`R13`代表
 - 旧的`r4`
 - 旧的`r3`，此时的`sp`指向这里
 
-根据这个就可以修改`mon_backtrace()`了。
+根据这个就可以修改`mon_backtrace()`了。当然，我们没有办法在ARM中通过栈中的内容确定函数调用的参数，所以在测试中删除了参数相关的内容。
 
 ### 保留并修改的文件
 
-下面列出在ARM移植中保留下来的文件及其主要修改，可能并非全部：
+下面列出在ARM移植中Lab1部分保留下来的文件及其主要修改，可能并非全部：
+
+- `.gdbinit.tmpl`：删除了x86相关
+
 
 - `GNUmakefile`：将选项`-m32` `elf_i386`分别修改为`-marm` `armelf`，`IMAGES`修改为`$(OBJDIR)/kern/kernel`，`QEMUOPTS`前面部分修改为`-kernel $(OBJDIR)/kern/kernel -m 256 -M raspi2`，调试器修改为`arm-none-eabi-gdb`
 - `conf/env.mk`：定义了`GCCPREFIX='arm-none-eabi-'` `QEMU=qemu-system-arm`
-- `inc/arm.h`：取代`x86.h`
+- `inc/arm.h`：取代了`x86.h`
 - `inc/mmu.h`：修改了MMU地址翻译相关内容，删除了x86特殊寄存器和描述符相关内容
 - `kern/console.c`：重写了底层I/O
 - `kern/console.h`：修改了声明
@@ -152,4 +155,44 @@ ARM中的函数调用栈布局与x86也有所不同。如前所述，`R13`代表
 - `kern/Makefrag`：删除了`boot`的内容，不再生成`obj/kern/kernel.img`
 - `kern/monitor.c`：修改了`mon_backtrace()`适应ARM中的栈结构
 - `lib/string.c`：删除了对x86优化的汇编代码
+
+
+## Lab 2: Memory Management
+
+### 物理内存
+
+正如标题所示，Lab2的主要内容就是对内存进行管理，其中最重要的是建立虚拟地址的映射。在这个部分的ARM移植中，我们主要就是修改`kern/pmap.c`中的代码。
+
+前面已经提到过，由于ARM硬件通常都是特别定制的，没有一种通用的方法可以探测到有多少物理内存，我们可能需要把这个信息直接编码到系统中去。在JOS中，由于`KERNBASE = 0xF0000000`，最大只能支持`0x10000000`即256MB的物理内存，我们在使用QEMU模拟时也设置参数`-m 256`，这样我们就固定内存大小为256MB。如此也就不需要`kern/kclock.c`中的内容了。
+
+在ARM中没有单独的I/O端口地址空间，所以外围设备的寄存器都被编码到地址空间中去了。我们只使用256MB的内存，所以不会影响到这部分地址空间。参考Raspberry Pi的官方文档https://www.raspberrypi.org/documentation/hardware/raspberrypi/bcm2835/BCM2835-ARM-Peripherals.pdf和https://www.raspberrypi.org/documentation/hardware/raspberrypi/bcm2836/QA7_rev3.4.pdf，可以获知这些外围设备的具体情况。
+
+对于虚拟内存地址空间，我们完整保存原来JOS的内存布局，即`inc/memlayout.h`，特别的只是`[0xef800000, 0xefc00000)`这部分MMIO虚拟地址要映射到`[0x3f200000, 0x3f600000)`，作为GPIO的映射。
+
+对于物理内存地址空间，我们在`page_init()`中进行设置，和原来类似，只是不需要再考虑IO hole的问题：
+
+- `[0x0, 0x1000)`：主要为Generic interrupt controller保留
+- `[0x1000, 0x0x100000)`：空闲
+- `[0x0x100000, PADDR(boot_alloc(0, PGSIZE))`：内核及其它
+- `[PADDR(boot_alloc(0, PGSIZE)), npages * PGSIZE)`：空闲
+
+### 地址翻译
+
+在经过`mem_init()`对内存管理进行初始化之后，我们就只使用12-8-12这样的两级翻译了。这个和x86的10-10-12有点不太一样，其中descriptor每个位的意义也有所不同，这些都写在`inc/mmu.h`中了。
+
+我们仍然使用`KERNBASE`，可以通过虚拟地址`[0xf0000000, 0x100000000)`来直接访问全部的物理地址`[0x0, 0x10000000)`。
+
+在x86的JOS中有一个十分精巧的`UVPT`，但是由于ARM中12-8-12这种奇妙的划分，我们没有办法直接把它迁移过来，只好舍去，通过其它的办法访问两级翻译表中的descriptor。还需要注意的是，First-level table大小为16KB，Second-level table大小为1KB，在`boot_alloc()`中，我们最好还是加上一个额外的对齐量的参数，比如`kern_pgdir`就应该是16KB对齐的。但是在有了物理页管理之后，如果需要通过`page_alloc()`申请一个Second-level table，只能占用掉一整个4KB页，会浪费掉3/4的空间。因此，我们需要做一个优化，写一个函数`page_alloc_quar()`来申请四分之一个页作为Second-level table。
+
+### 保留并修改的文件
+
+Lab2中主要就是修改`kern/pmap.c`，此外也删除了一些内容，如`kern/kclock.c`等。
+
+`kern/pmap.c`中的函数修改主要如下：
+
+- `arm_detect_memory()`：取代了`i386_detect_memory()`，直接得到内存大小
+- `boot_alloc()`：加上了对齐量参数
+- `mem_init()`：修改了调用各子函数时的参数，特别是`boot_map_region()`的参数，以及用ARM的`TTBR0`取代x86的`cr3`
+- `pgdir_walk()` `boot_map_region()` `page_insert` `page_lookup`：修改了各个宏
+- `check_***()`：根据我们的修改后的内容检查。这部分修改非常的繁琐，而且其中对于页面的强行操作也可能导致一些bug，在`make grade`通过之后最好将这些检查都注释掉
 

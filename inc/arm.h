@@ -10,4 +10,15 @@ static inline uint32_t read_r11(void)
     return r11;
 }
 
+static inline void lttbr0(uint32_t val)
+{
+    asm volatile("mcr p15, 0, %0, c2, c0, 0" : : "r"(val));
+}
+
+static inline void
+invlpg(void *addr)
+{
+	asm("mcr p15, 0, %0, c8, c7, 1": : "r"(addr));
+}
+
 #endif

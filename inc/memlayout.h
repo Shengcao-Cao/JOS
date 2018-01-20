@@ -136,5 +136,27 @@
 typedef uint32_t pte_t;
 typedef uint32_t pde_t;
 
+/*
+ * Page descriptor structures, mapped at UPAGES.
+ * Read/write to the kernel, read-only to user programs.
+ *
+ * Each struct PageInfo stores metadata for one physical page.
+ * Is it NOT the physical page itself, but there is a one-to-one
+ * correspondence between physical pages and struct PageInfo's.
+ * You can map a struct PageInfo * to the corresponding physical address
+ * with page2pa() in kern/pmap.h.
+ */
+struct PageInfo {
+	// Next page on the free list.
+	struct PageInfo *pp_link;
+
+	// pp_ref is the count of pointers (usually in page table entries)
+	// to this page, for pages allocated using page_alloc.
+	// Pages allocated at boot time using pmap.c's
+	// boot_alloc do not have valid reference count fields.
+
+	uint16_t pp_ref;
+};
+
 #endif /* !__ASSEMBLER__ */
 #endif /* !JOS_INC_MEMLAYOUT_H */

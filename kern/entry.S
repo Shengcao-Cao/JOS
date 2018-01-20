@@ -20,7 +20,7 @@ entry:
     mcr p15, 0, r0, c2, c0, 0
     
     # Set DACR
-    ldr r0, =0x1
+    ldr r0, =DACR
     mcr p15, 0, r0, c3, c0, 0
     
     # Set SCTLR
