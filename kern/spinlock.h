@@ -25,7 +25,7 @@ void spin_unlock(struct spinlock *lk);
 
 #define spin_initlock(lock)   __spin_initlock(lock, #lock)
 
-extern struct spinlock kernel_lock;
+/* extern struct spinlock kernel_lock;
 
 static inline void
 lock_kernel(void)
@@ -42,6 +42,63 @@ unlock_kernel(void)
 	// one CPU at a time and has a long time-slice.  Without the
 	// pause, this CPU is likely to reacquire the lock before
 	// another CPU has even been given a chance to acquire it.
+	asm volatile("pause");
+} */
+
+extern struct spinlock ev_lock;
+extern struct spinlock pg_lock;
+extern struct spinlock io_lock;
+extern struct spinlock mo_lock;
+
+static inline void
+lock_ev(void)
+{
+	spin_lock(&ev_lock);
+}
+
+static inline void
+lock_pg(void)
+{
+	spin_lock(&pg_lock);
+}
+
+static inline void
+lock_io(void)
+{
+	spin_lock(&io_lock);
+}
+
+static inline void
+lock_mo(void)
+{
+	spin_lock(&mo_lock);
+}
+
+static inline void
+unlock_ev(void)
+{
+	spin_unlock(&ev_lock);
+	asm volatile("pause");
+}
+
+static inline void
+unlock_pg(void)
+{
+	spin_unlock(&pg_lock);
+	asm volatile("pause");
+}
+
+static inline void
+unlock_io(void)
+{
+	spin_unlock(&io_lock);
+	asm volatile("pause");
+}
+
+static inline void
+unlock_mo(void)
+{
+	spin_unlock(&mo_lock);
 	asm volatile("pause");
 }
 

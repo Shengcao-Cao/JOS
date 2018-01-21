@@ -29,6 +29,7 @@ sched_yield(void)
 	// below to halt the cpu.
 
 	// LAB 4: Your code here.
+	lock_ev();
     struct Env *cur = thiscpu->cpu_env;
     int start = 1, end = 0, i;
     if (cur)
@@ -70,7 +71,10 @@ sched_halt(void)
 			break;
 	}
 	if (i == NENV) {
+		unlock_ev();
+	    lock_io();
 		cprintf("No runnable environments in the system!\n");
+		unlock_io();
 		while (1)
 			monitor(NULL);
 	}
@@ -78,14 +82,12 @@ sched_halt(void)
 	// Mark that no environment is running on this CPU
 	curenv = NULL;
 	lcr3(PADDR(kern_pgdir));
+	unlock_ev();
 
 	// Mark that this CPU is in the HALT state, so that when
 	// timer interupts come in, we know we should re-acquire the
 	// big kernel lock
 	xchg(&thiscpu->cpu_status, CPU_HALTED);
-
-	// Release the big kernel lock as if we were "leaving" the kernel
-	unlock_kernel();
 
 	// Reset stack pointer, enable interrupts and then halt.
 	asm volatile (

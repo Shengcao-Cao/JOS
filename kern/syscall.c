@@ -11,6 +11,7 @@
 #include <kern/syscall.h>
 #include <kern/console.h>
 #include <kern/sched.h>
+#include <kern/spinlock.h>
 
 // Print a string to the system console.
 // The string is exactly 'len' characters long.
@@ -22,10 +23,14 @@ sys_cputs(const char *s, size_t len)
 	// Destroy the environment if not.
 
 	// LAB 3: Your code here.
+	lock_ev();
     user_mem_assert(curenv, s, len, PTE_U);
+    unlock_ev();
 
 	// Print the string supplied by the user.
+	lock_io();
 	cprintf("%.*s", len, s);
+	unlock_io();
 }
 
 // Read a character from the system console without blocking.
@@ -33,7 +38,10 @@ sys_cputs(const char *s, size_t len)
 static int
 sys_cgetc(void)
 {
-	return cons_getc();
+    lock_io();
+    int r = cons_getc();
+    unlock_io();
+	return r;
 }
 
 // Returns the current environment's envid.
@@ -54,13 +62,20 @@ sys_env_destroy(envid_t envid)
 	int r;
 	struct Env *e;
 
-	if ((r = envid2env(envid, &e, 1)) < 0)
-		return r;
+    lock_ev();
+    if ((r = envid2env(envid, &e, 1)) < 0)
+    {
+        unlock_ev();
+        return r;
+    }
+    lock_io();
 	if (e == curenv)
 		cprintf("[%08x] exiting gracefully\n", curenv->env_id);
 	else
 		cprintf("[%08x] destroying %08x\n", curenv->env_id, e->env_id);
+    unlock_io();
 	env_destroy(e);
+	unlock_ev();
 	return 0;
 }
 
@@ -85,13 +100,20 @@ sys_exofork(void)
 	// will appear to return 0.
 
 	// LAB 4: Your code here.
+	lock_ev();
     struct Env *child = NULL, *parent = curenv;
     int r = env_alloc(&child, parent->env_id);
-    if (r < 0) return r;
+    if (r < 0)
+    {
+        unlock_ev();
+        return r;
+    }
     child->env_status = ENV_NOT_RUNNABLE;
     child->env_tf = parent->env_tf;
     child->env_tf.tf_regs.reg_eax = 0;
-    return child->env_id;
+    envid_t e = child->env_id;
+    unlock_ev();
+    return e;
 }
 
 // Set envid's env_status to status, which must be ENV_RUNNABLE
@@ -111,12 +133,21 @@ sys_env_set_status(envid_t envid, int status)
 	// envid's status.
 
 	// LAB 4: Your code here.
+	lock_ev();
     struct Env *e = NULL;
     int r = envid2env(envid, &e, 1);
-    if (r < 0) return r;
+    if (r < 0)
+    {
+        unlock_ev();
+        return r;
+    }
     if (status != ENV_RUNNABLE && status != ENV_NOT_RUNNABLE)
+    {
+        unlock_ev();
         return -E_INVAL;
+    }
     e->env_status = status;
+    unlock_ev();
     return 0;
 }
 
@@ -132,10 +163,16 @@ static int
 sys_env_set_pgfault_upcall(envid_t envid, void *func)
 {
 	// LAB 4: Your code here.
+	lock_ev();
     struct Env *e = NULL;
     int r = envid2env(envid, &e, 1);
-    if (r < 0) return r;
+    if (r < 0)
+    {
+        unlock_ev();
+        return r;
+    }
     e->env_pgfault_upcall = func;
+    unlock_ev();
     return 0;
 }
 
@@ -166,19 +203,37 @@ sys_page_alloc(envid_t envid, void *va, int perm)
 	//   allocated!
 
 	// LAB 4: Your code here.
+	lock_ev();
     struct Env *e = NULL;
     int r = envid2env(envid, &e, 1);
-    if (r < 0) return r;
-    if ((uint32_t)va >= UTOP || (uint32_t)va % PGSIZE) return -E_INVAL;
-    if (!(perm & PTE_U) || !(perm & PTE_P) || perm & ~PTE_SYSCALL) return -E_INVAL;
+    if (r < 0)
+    {
+        unlock_ev();
+        return r;
+    }
+    if ((uint32_t)va >= UTOP || (uint32_t)va % PGSIZE || 
+        !(perm & PTE_U) ||!(perm & PTE_P) || perm & ~PTE_SYSCALL)
+    {
+        unlock_ev();
+        return -E_INVAL;
+    }
+    lock_pg();
     struct PageInfo *pp = page_alloc(1);
-    if (!pp) return -E_NO_MEM;
+    if (!pp)
+    {
+        unlock_pg();
+        unlock_ev();
+        return -E_NO_MEM;
+    }
     r = page_insert(e->env_pgdir, pp, va, perm);
+    unlock_ev();
     if (r < 0)
     {
         page_free(pp);
+        unlock_pg();
         return r;
     }
+    unlock_pg();
     return 0;
 }
 
@@ -210,20 +265,45 @@ sys_page_map(envid_t srcenvid, void *srcva,
 	//   check the current permissions on the page.
 
 	// LAB 4: Your code here.
+	lock_ev();
     struct Env *srcE = NULL, *dstE = NULL;
     int r = 0;
     r = envid2env(srcenvid, &srcE, 1);
-    if (r < 0) return r;
+    if (r < 0)
+    {
+        unlock_ev();
+        return r;
+    }
     r = envid2env(dstenvid, &dstE, 1);
-    if (r < 0) return r;
-    if ((uint32_t)srcva >= UTOP || (uint32_t)srcva % PGSIZE) return -E_INVAL;
-    if ((uint32_t)dstva >= UTOP || (uint32_t)dstva % PGSIZE) return -E_INVAL;
+    if (r < 0)
+    {
+        unlock_ev();
+        return r;
+    }
+    if ((uint32_t)srcva >= UTOP || (uint32_t)srcva % PGSIZE ||
+        (uint32_t)dstva >= UTOP || (uint32_t)dstva % PGSIZE)
+    {
+        unlock_ev();
+        return -E_INVAL;
+    }
+    lock_pg();
     pte_t *ptep = NULL;
     struct PageInfo *pp = page_lookup(srcE->env_pgdir, srcva, &ptep);
-    if (!pp) return -E_INVAL;
-    if (!(perm & PTE_U) || !(perm & PTE_P) || perm & ~PTE_SYSCALL) return -E_INVAL;
-    if (perm & PTE_W && !(*ptep & PTE_W)) return -E_INVAL;
+    if (!pp || !(perm & PTE_U) || !(perm & PTE_P) || perm & ~PTE_SYSCALL)
+    {
+        unlock_pg();
+        unlock_ev();
+        return -E_INVAL;
+    }
+    if (perm & PTE_W && !(*ptep & PTE_W))
+    {
+        unlock_pg();
+        unlock_ev();
+        return -E_INVAL;
+    }
     r = page_insert(dstE->env_pgdir, pp, dstva, perm);
+    unlock_pg();
+    unlock_ev();
     if (r < 0) return r;
     return 0;
 }
@@ -241,11 +321,23 @@ sys_page_unmap(envid_t envid, void *va)
 	// Hint: This function is a wrapper around page_remove().
 
 	// LAB 4: Your code here.
+	lock_ev();
     struct Env *e = NULL;
     int r = envid2env(envid, &e, 1);
-    if (r < 0) return r;
-    if ((uint32_t)va >= UTOP || (uint32_t)va % PGSIZE) return -E_INVAL;
+    if (r < 0)
+    {
+        unlock_ev();
+        return r;
+    }
+    if ((uint32_t)va >= UTOP || (uint32_t)va % PGSIZE)
+    {
+        unlock_ev();
+        return -E_INVAL;
+    }
+    lock_pg();
     page_remove(e->env_pgdir, va);
+    unlock_pg();
+    unlock_ev();
     return 0;
 }
 
@@ -291,24 +383,55 @@ static int
 sys_ipc_try_send(envid_t envid, uint32_t value, void *srcva, unsigned perm)
 {
 	// LAB 4: Your code here.
+	lock_ev();
     struct Env *e;
     int r;
     r = envid2env(envid, &e, 0);
-    if (r < 0) return r;
+    if (r < 0)
+    {
+        unlock_ev();
+        return r;
+    }
     if (!(e->env_ipc_recving) || e->env_ipc_from)
     {
+        unlock_ev();
         return -E_IPC_NOT_RECV;
     }
     if (e->env_ipc_dstva < (void*)UTOP && srcva < (void*)UTOP)
     {
-        if (srcva != ROUNDDOWN(srcva, PGSIZE)) return -E_INVAL;
+        if (srcva != ROUNDDOWN(srcva, PGSIZE))
+        {
+            unlock_ev();
+            return -E_INVAL;
+        }
+        lock_pg();
         pte_t *ptep = NULL;
         struct PageInfo *pp = page_lookup(curenv->env_pgdir, srcva, &ptep);
-        if (!pp) return -E_INVAL;
-        if (!(perm & PTE_U) || !(perm & PTE_P) || perm & ~PTE_SYSCALL) return -E_INVAL;
-        if (perm & PTE_W && !(*ptep & PTE_W)) return -E_INVAL;
+        if (!pp)
+        {
+            unlock_pg();
+            unlock_ev();
+            return -E_INVAL;
+        }
+        if (!(perm & PTE_U) || !(perm & PTE_P) || perm & ~PTE_SYSCALL)
+        {
+            unlock_pg();
+            unlock_ev();
+            return -E_INVAL;
+        }
+        if (perm & PTE_W && !(*ptep & PTE_W))
+        {
+            unlock_pg();
+            unlock_ev();
+            return -E_INVAL;
+        }
         r = page_insert(e->env_pgdir, pp, e->env_ipc_dstva, perm);
-        if (r < 0) return r;
+        unlock_pg();
+        if (r < 0)
+        {
+            unlock_ev();
+            return r;
+        }
         e->env_ipc_perm = perm;
     }
     else
@@ -318,6 +441,7 @@ sys_ipc_try_send(envid_t envid, uint32_t value, void *srcva, unsigned perm)
     e->env_ipc_value = value;
     e->env_tf.tf_regs.reg_eax = 0;
     e->env_status = ENV_RUNNABLE;
+    unlock_ev();
     return 0;
 }
 
@@ -336,12 +460,17 @@ static int
 sys_ipc_recv(void *dstva)
 {
 	// LAB 4: Your code here.
+	lock_ev();
     if (dstva < (void*)UTOP && dstva != ROUNDDOWN(dstva, PGSIZE))
+    {
+        unlock_ev();
         return -E_INVAL;
+    }
     curenv->env_ipc_recving = 1;
     curenv->env_ipc_from = 0;
     curenv->env_ipc_dstva = dstva;
     curenv->env_status = ENV_NOT_RUNNABLE;
+    unlock_ev();
     sched_yield();
 }
 

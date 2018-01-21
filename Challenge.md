@@ -11,7 +11,7 @@
 > - 调度器
 > - 进程间通信
 
-首先我们需要梳理清楚JOS启动到运行的整个流程：
+首先我们需要梳理清楚使用大内核锁的JOS从启动到运行的整个流程：
 
 - `boot/boot.S` `boot/main.c` `kern/entry.S`：加载内核以及最基本的初始化，之后进入`kern/init.c`中的`i386_init()`
 - `cons_init()` `mem_init()` `env_init()` `trap_init()`：Lab1至Lab3中的内容所做的一系列初始化
@@ -38,3 +38,35 @@
 - `kern/syscall.c`：有一些直接对`envs`的操作
 - `kern/trap.c`：有一些直接对`envs`的操作
 
+综合以上的考虑，我们进行这样的设计：
+
+- 在`kern/spinlock.h`和`kern/spinlock.c`中添加四个较细粒度的锁：`ev_lock` `pg_lock` `io_lock` `mo_lock`，取代原来的大内核锁`kernel_lock`
+- 在`kern/env.c` `kern/init.c` `kern/monitor.c` `kern/sched.c` `kern/syscall.c` `kern/trap.c`中用锁对上述几个内容进行保护
+
+具体的修改记录如下：
+
+- `kern/env.c`
+  - `env_setup_vm` `region_alloc` `env_free`中添加`pg_lock`的保护
+  - `env_alloc`中添加`io_lock`的保护
+  - `env_destroy()`中如果是当前环境摧毁自己，`env_destroy()`不会正常返回，需要最后释放`ev_lock`
+  - `env_run()`的调用者都需要先获得`ev_lock`，在`env_run()`最后会调用`env_pop_tf()`，然后在其中的汇编代码之前才能释放`ev_lock`（释放这个锁的时机调试了很久才得出，如果像大内核锁一样在`env_pop_tf()`之前释放会导致`primes`程序发生一些奇妙的错误）
+- `kern/init.c`
+  - `i386_init`中创建用户环境前后添加`ev_lock`的保护
+- `kern/monitor.c`
+  - `monitor()`中添加`io_lock` `mo_lock`的保护，保证只有一个CPU运行监视器
+- `kern/sched.c`
+  - `sched_yield()` `sched_halt()`中添加`ev_lock`的保护，遇到调用`env_run()`的先不释放`ev_lock`
+
+
+- `kern/syscall.c`
+  - `sys_cputs()`中添加`ev_lock` `io_lock`的保护
+  - `sys_cgetc()`中添加`io_lock`的保护
+  - `sys_env_destroy()`中添加`ev_lock` `io_lock`的保护
+  - `sys_exofork()` `sys_env_set_status()` `sys_env_set_pgfault_upcall()`中添加`ev_lock`的保护
+  - `sys_page_alloc()` `sys_page_map()` `sys_page_unmap()`中添加`ev_lock` `io_lock`的保护
+  - `sys_ipc_try_send()` `sys_ipc_recv()`中添加`ev_lock` `io_lock`的保护
+- `kern/trap.c`
+  - `print_trapframe()`中添加`io_lock`的保护
+  - `trap_dispatch()` `trap()` `page_fault_handler()`中添加`ev_lock`的保护，遇到调用`env_run()`的先不释放`ev_lock`
+
+修改完成后`make grade`通过，看起来应该是没有问题了。

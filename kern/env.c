@@ -170,8 +170,13 @@ env_setup_vm(struct Env *e)
 	struct PageInfo *p = NULL;
 
 	// Allocate a page for the page directory
+	lock_pg();
 	if (!(p = page_alloc(ALLOC_ZERO)))
+	{
+	    unlock_pg();
 		return -E_NO_MEM;
+	}
+	unlock_pg();
 
 	// Now, set e->env_pgdir and initialize the page directory.
 	//
@@ -273,7 +278,9 @@ env_alloc(struct Env **newenv_store, envid_t parent_id)
 	env_free_list = e->env_link;
 	*newenv_store = e;
 
+    lock_io();
 	cprintf("[%08x] new env %08x\n", curenv ? curenv->env_id : 0, e->env_id);
+	unlock_io();
 	return 0;
 }
 
@@ -298,12 +305,17 @@ region_alloc(struct Env *e, void *va, size_t len)
     void *va_end = ROUNDUP(va + len, PGSIZE);
     void *va_i;
     struct PageInfo *pp;
+    lock_pg();
     for (va_i = va_start; va_i != va_end; va_i += PGSIZE)
     {
         if (!(pp = page_alloc(0)) ||
                 page_insert(e->env_pgdir, pp, va_i, PTE_U | PTE_W))
+        {
+            unlock_pg();
             panic("region_alloc: Allocation fails!\n");
+        }
     }
+    unlock_pg();
 }
 
 //
@@ -426,6 +438,7 @@ env_free(struct Env *e)
 
 	// Flush all mapped pages in the user portion of the address space
 	static_assert(UTOP % PTSIZE == 0);
+	lock_pg();
 	for (pdeno = 0; pdeno < PDX(UTOP); pdeno++) {
 
 		// only look at mapped page tables
@@ -451,6 +464,7 @@ env_free(struct Env *e)
 	pa = PADDR(e->env_pgdir);
 	e->env_pgdir = 0;
 	page_decref(pa2page(pa));
+	unlock_pg();
 
 	// return the environment to the free list
 	e->env_status = ENV_FREE;
@@ -478,6 +492,7 @@ env_destroy(struct Env *e)
 
 	if (curenv == e) {
 		curenv = NULL;
+		unlock_ev();
 		sched_yield();
 	}
 }
@@ -494,6 +509,7 @@ env_pop_tf(struct Trapframe *tf)
 {
 	// Record the CPU we are running on for user-space debugging
 	curenv->env_cpunum = cpunum();
+    unlock_ev();
 
 	asm volatile(
 		"\tmovl %0,%%esp\n"
@@ -539,7 +555,6 @@ env_run(struct Env *e)
     curenv->env_status = ENV_RUNNING;
     ++curenv->env_runs;
     lcr3(PADDR(curenv->env_pgdir));
-    unlock_kernel();
     env_pop_tf(&curenv->env_tf);
 }
 

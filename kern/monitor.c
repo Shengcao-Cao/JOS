@@ -12,6 +12,7 @@
 #include <kern/kdebug.h>
 #include <kern/pmap.h>
 #include <kern/trap.h>
+#include <kern/spinlock.h>
 
 #define CMDBUF_SIZE	80	// enough for one VGA text line
 
@@ -259,6 +260,7 @@ runcmd(char *buf, struct Trapframe *tf)
 void
 monitor(struct Trapframe *tf)
 {
+    lock_mo();
 	char *buf;
 
 	cprintf("Welcome to the JOS kernel monitor!\n");
@@ -273,4 +275,5 @@ monitor(struct Trapframe *tf)
 			if (runcmd(buf, tf) < 0)
 				break;
 	}
+	unlock_mo();
 }

@@ -9,10 +9,34 @@
 #include <kern/spinlock.h>
 #include <kern/kdebug.h>
 
-// The big kernel lock
+/* // The big kernel lock
 struct spinlock kernel_lock = {
 #ifdef DEBUG_SPINLOCK
 	.name = "kernel_lock"
+#endif
+}; */
+
+struct spinlock ev_lock = {
+#ifdef DEBUG_SPINLOCK
+	.name = "ev_lock"
+#endif
+};
+
+struct spinlock pg_lock = {
+#ifdef DEBUG_SPINLOCK
+	.name = "pg_lock"
+#endif
+};
+
+struct spinlock io_lock = {
+#ifdef DEBUG_SPINLOCK
+	.name = "io_lock"
+#endif
+};
+
+struct spinlock mo_lock = {
+#ifdef DEBUG_SPINLOCK
+	.name = "mo_lock"
 #endif
 };
 
