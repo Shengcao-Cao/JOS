@@ -345,27 +345,6 @@ sys_ipc_recv(void *dstva)
     sched_yield();
 }
 
-static int
-sys_env_set_handler(envid_t envid, uint32_t trapno, void *func)
-{
-    struct Env *e = NULL;
-    int r = envid2env(envid, &e, 1);
-    if (r < 0) return r;
-    if (trapno < 0 || trapno >= 64) return -E_INVAL;
-    e->env_handler[trapno] = func;
-    return 0;
-}
-
-static int
-sys_env_set_handler_entry(envid_t envid, void *func)
-{
-    struct Env *e = NULL;
-    int r = envid2env(envid, &e, 1);
-    if (r < 0) return r;
-    e->env_handler_entry = func;
-    return 0;
-}
-
 // Dispatches to the correct kernel function, passing the arguments.
 int32_t
 syscall(uint32_t syscallno, uint32_t a1, uint32_t a2, uint32_t a3, uint32_t a4, uint32_t a5)
@@ -403,10 +382,6 @@ syscall(uint32_t syscallno, uint32_t a1, uint32_t a2, uint32_t a3, uint32_t a4, 
         return sys_ipc_try_send(a1, a2, (void*)a3, a4);
     case SYS_ipc_recv:
         return sys_ipc_recv((void*)a1);
-    case SYS_env_set_handler:
-        return sys_env_set_handler(a1, a2, (void*)a3);
-    case SYS_env_set_handler_entry:
-        return sys_env_set_handler_entry(a1, (void*)a2);
     default:
         return -E_INVAL;
     }

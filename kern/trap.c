@@ -249,26 +249,6 @@ trap_dispatch(struct Trapframe *tf)
 	// Handle processor exceptions.
 	// LAB 3: Your code here.
     int ret;
-    if (curenv && curenv->env_handler[tf->tf_trapno])
-    {
-        struct UTrapframe *utf;
-        if (UXSTACKTOP - PGSIZE <= tf->tf_esp && tf->tf_esp < UXSTACKTOP)
-            utf = (struct UTrapframe*)(tf->tf_esp - sizeof(struct UTrapframe) - 4);
-        else
-            utf = (struct UTrapframe*)(UXSTACKTOP - sizeof(struct UTrapframe));
-        user_mem_assert(curenv, (void*)utf - 4, sizeof(struct UTrapframe) + 4, PTE_W);
-        utf->utf_err = tf->tf_err;
-        utf->utf_regs = tf->tf_regs;
-        utf->utf_eip = tf->tf_eip;
-        utf->utf_eflags = tf->tf_eflags;
-        utf->utf_esp = tf->tf_esp;
-        void *entry = (void*)utf - 4;
-        *(void**)entry = curenv->env_handler[tf->tf_trapno];
-        curenv->env_tf.tf_eip = (uintptr_t)curenv->env_handler_entry;
-        curenv->env_tf.tf_esp = (uintptr_t)entry;
-        env_run(curenv);
-        return;
-    }
     switch(tf->tf_trapno)
     {
     case T_PGFLT:
