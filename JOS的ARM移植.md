@@ -4,7 +4,7 @@
 
 ## 前言
 
-我们将把JOS的部分实现移植到ARM平台上。目前已完成的进度：Lab2的代码和文档。所有内容均上传至GitHub：https://github.com/Friedrich1006/JOS/tree/arm。
+我们将把JOS的部分实现移植到ARM平台上。目前已完成的进度：Lab2的代码和文档，Lab3的设计。所有内容均上传至GitHub：https://github.com/Friedrich1006/JOS/tree/arm。
 
 首先，我们需要准备好所需要的工具。
 
@@ -18,7 +18,7 @@
 
 接下来学习一个ARM的基本知识（http://wiki.osdev.org/ARM_Overview）。
 
-- ARM中有7种操作模式，总的来说就是一种特权级较低的用户模式和特权级较高的其它几种模式。每种模式有着自己独立的栈和一些寄存器。
+- ARM中有9种处理器模式，总的来说就是一种特权级较低的用户模式和特权级较高的其它几种模式。每种模式有着自己独立的栈和一些寄存器。
 - ARM定义了7种异常：Reset、Undefined Instruction、Software Interrupt、Prefetch Abort、Data Abort、Interrupt Request、Fast Interrupt Request，这比x86要少得多。通过异常向量表中具体的指令，发生异常后处理器可以跳转到对应的处理程序，同时也会自动进入对应的模式。
 - ARM中的寄存器非常的多。通用寄存器包括`R0`到`R15`，其中`R13`代表stack pointer，`R14`代表link register，`R15`代表program counter。
 - ARM中的指令长度是固定的，A32模式长度为32位，Thumb32模式长度为16位。ARM属于RISC体系结构，只有较为简单的一些指令。
@@ -195,3 +195,58 @@ Lab2中主要就是修改`kern/pmap.c`，此外也删除了一些内容，如`ke
 - `mem_init()`：修改了调用各子函数时的参数，特别是`boot_map_region()`的参数，以及用ARM的`TTBR0`取代x86的`cr3`
 - `pgdir_walk()` `boot_map_region()` `page_insert` `page_lookup`：修改了各个宏
 - `check_***()`：根据我们的修改后的内容检查。这部分修改非常的繁琐，而且其中对于页面的强行操作也可能导致一些bug，在`make grade`通过之后最好将这些检查都注释掉
+
+## Lab 3: User Environments
+
+### 处理器状态
+
+在Lab3中主要实现的功能就是在受保护的用户模式下运行程序。为此，首先定义了`struct Env`这种结构来保存一个用户环境的上下文信息等，然后在`kern/env.c`中定义了一系列函数对用户环境进行控制。在x86中我们引入了异常和中断的概念，然后是通过trap进入内核，实现进一步的处理。我们所实现的重要的异常和中断包括：缺页、断点和系统调用。
+
+根据ARM Architecture Reference Manuel (ARMv7-A)，在ARM中定义了多达9种的处理器模式，如下所述：
+
+- User mode：运行用户程序时的模式，特权级为PL0
+- System mode：运行系统代码时的模式，特权级为PL1
+- Supervisor mode：处理器复位（到目前的Lab2为止，我们都在此模式下）或者通过执行`SVC`指令产生Supervisor Call异常时进入的模式，特权级为PL1
+- Abort mode：发生Data Abort或者Prefetch Abort异常时进入的模式，特权级为PL1
+- Undefined mode：执行未定义指令时进入的模式，特权级为PL1
+- FIQ mode：发生FIQ（F代表Fast）中断时进入的模式，特权级为PL1
+- IRQ mode：发生IRQ中断时进入的模式，特权级为PL1
+- Hyp mode：通过执行`HVC`指令产生Hypervisor Call 异常时进入的模式，特权级为PL2
+- Monitor mode：通过执行`SMC`指令产生Secure Monitor Call异常时进入的模式，特权级为PL1
+
+每种模式有一个自己的5位的编码，保存在CPSR寄存器的最低5位中，可以查看。每种模式还可能有自己独立的通用寄存器，比如说FIQ就有独立的`R8-R14`。除此之外还定义了Secure / Non-secure mode。
+
+### 异常处理
+
+当发生异常（这里不再像x86中区分异常和中断）时，处理器会跳转到对应的异常向量去。异常向量表中，只有8个异常向量，默认情况下就起始于`0x00000000`。在Secure mode下，每个异常向量代表：
+
+- `0x00`：保留
+- `0x04`：未定义指令
+- `0x08`：Supervisor Call
+- `0x0c`：Prefetch Abort
+- `0x10`：Data Abort
+- `0x14`：保留
+- `0x18`：IRQ中断
+- `0x1c`：FIQ中断
+
+需要注意的是，异常向量这个地址中所存的是一条指令（通常是跳转），而不是像x86中的一个包含着处理函数入口的描述符。异常的进入流程大致如下：
+
+- 由硬件确定应当进入哪种模式
+- 返回地址被保存在`lr`寄存器中，通常是发生异常的下一条指令，异常处理完后可以通过它来返回
+- CPSR中的值被保存到SPSR中
+- CPSR被更新，最重要的是代表模式的编码改变
+- 对应的异常向量载入`pc`中
+- 从这个`pc`开始执行指令
+
+可见，这个流程和x86中还是很相似的。
+
+### 实现设计
+
+由于时间关系，无法将Lab3的ARM移植完全实现。这里列出大致的修改思路：
+
+- `inc/trap.h`：按照ARM中的寄存器修改`struct Trapframe`的定义
+- `kern/env.c`：按照ARM中的地址空间修改`env_setup_vm()` `region_alloc()` `load_icode()` `env_free()` `env_run()`，在`env_pop_tf()`也是根据`struct Trapframe`返回，需要注意的是要将CPSR中的模式位修改为User mode
+- `kern/trap.h` `kern/trap.c` `kern/trapentry.S`：进入trap的方式要做一些改变。首先我们应当为系统调用定义Supervisor Call的处理程序，为缺页定义Abort的处理程序，为断点定义未定义指令的处理程序，为外部中断定义IRQ的处理程序。在处理之前，都应当先切换到内核异常栈，将原来的寄存器状态保存在一个`struct Trapframe`中。处理完成后，再从`struct Trapframe`恢复。初始化时，在`0x00000000`开始的异常向量表中填入对应的跳转语句，并做好内存地址的映射
+- `inc/syscall.h` `kern/syscall.h` `kern/syscall.c` `lib/syscall.c`：还是可以使用寄存器中的值作为参数，但是名字要做改变
+- `lib/entry.S`：进入用户程序的汇编代码需要重写
+- `lib/panic.c`：修改设置断点的汇编代码
