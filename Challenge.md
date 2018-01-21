@@ -51,9 +51,9 @@
   - `env_destroy()`中如果是当前环境摧毁自己，`env_destroy()`不会正常返回，需要最后释放`ev_lock`
   - `env_run()`的调用者都需要先获得`ev_lock`，在`env_run()`最后会调用`env_pop_tf()`，然后在其中的汇编代码之前才能释放`ev_lock`（释放这个锁的时机调试了很久才得出，如果像大内核锁一样在`env_pop_tf()`之前释放会导致`primes`程序发生一些奇妙的错误）
 - `kern/init.c`
-  - `i386_init`中创建用户环境前后添加`ev_lock`的保护
+  - `i386_init`中启动APs和创建用户环境前后添加`ev_lock`的保护
 - `kern/monitor.c`
-  - `monitor()`中添加`io_lock` `mo_lock`的保护，保证只有一个CPU运行监视器
+  - `monitor()`中添加`mo_lock`的保护，保证只有一个CPU运行监视器
 - `kern/sched.c`
   - `sched_yield()` `sched_halt()`中添加`ev_lock`的保护，遇到调用`env_run()`的先不释放`ev_lock`
 
